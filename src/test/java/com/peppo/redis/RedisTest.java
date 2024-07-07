@@ -9,6 +9,8 @@ import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResults;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.RedisSystemException;
+import org.springframework.data.redis.connection.Message;
+import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
@@ -215,6 +217,21 @@ public class RedisTest {
 
         for (MapRecord<String, Object, Object> record : records) {
             System.out.println(record);
+        }
+    }
+
+    @Test
+    void testPubSub() {
+        redisTemplate.getConnectionFactory().getConnection().subscribe(new MessageListener() {
+            @Override
+            public void onMessage(Message message, byte[] pattern) {
+                String event = new String(message.getBody());
+                System.out.println("Received message: " + event);
+            }
+        }, "my-channel".getBytes());
+
+        for (int i = 0; i < 10; i++) {
+            redisTemplate.convertAndSend("my-channel", "Hello world : " + i);
         }
     }
 }
