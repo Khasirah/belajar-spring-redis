@@ -3,16 +3,23 @@ package com.peppo.redis;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResults;
 import org.springframework.data.geo.Point;
+import org.springframework.data.redis.RedisSystemException;
 import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.core.*;
 import org.springframework.data.redis.domain.geo.Metrics;
 
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -130,5 +137,84 @@ public class RedisTest {
         assertEquals(2, sellers.getContent().size());
         assertEquals("Toko A", sellers.getContent().get(0).getContent().getName());
         assertEquals("Toko B", sellers.getContent().get(1).getContent().getName());
+    }
+
+    @Test
+    void testHyperLogLog() {
+        HyperLogLogOperations<String, String> operations = redisTemplate.opsForHyperLogLog();
+
+        operations.add("traffics", "haris", "kurniawan", "ahmad");
+        operations.add("traffics", "haris", "popi", "lestari");
+        operations.add("traffics", "popi", "nopiyanti", "haris");
+
+        assertEquals(6L, operations.size("traffics"));
+    }
+
+    @Test
+    void testTransaction() {
+        redisTemplate.execute(new SessionCallback<Object>() {
+
+            @Override
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                operations.multi();
+
+                operations.opsForValue().set("test1", "haris", Duration.ofSeconds(2));
+                operations.opsForValue().set("test2", "kurniawan", Duration.ofSeconds(2));
+
+                operations.exec();
+                return null;
+            }
+        });
+
+        assertEquals("haris", redisTemplate.opsForValue().get("test1"));
+        assertEquals("kurniawan", redisTemplate.opsForValue().get("test2"));
+    }
+
+    @Test
+    void testPipeline() {
+        List<Object> list = redisTemplate.executePipelined(new SessionCallback<>() {
+            @Override
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                operations.opsForValue().set("test1", "haris");
+                operations.opsForValue().set("test2", "kurniawan");
+                operations.opsForValue().set("test3", "popi");
+                operations.opsForValue().set("test4", "lestari");
+                return null;
+            }
+        });
+
+        assertThat(list, hasSize(4));
+        assertThat(list, hasItems(true));
+        assertThat(list, not(hasItems(false)));
+    }
+
+    @Test
+    void testPublishStream() {
+        var operations = redisTemplate.opsForStream();
+        var record = MapRecord.create("stream-1", Map.of(
+                "name", "ahmad haris kurniawan",
+                "address", "indonesia"
+        ));
+
+        for (int i = 0; i < 10; i++) {
+            operations.add(record);
+        }
+    }
+
+    @Test
+    void testSubscribeStream() {
+        var operations = redisTemplate.opsForStream();
+        try {
+            operations.createGroup("stream-1", "sample-group");
+        } catch (RedisSystemException exception) {
+            // group already exist
+        }
+
+        List<MapRecord<String, Object, Object>> records = operations.read(Consumer.from("sample-group", "sample-1"),
+                StreamOffset.create("stream-1", ReadOffset.lastConsumed()));
+
+        for (MapRecord<String, Object, Object> record : records) {
+            System.out.println(record);
+        }
     }
 }
