@@ -3,6 +3,8 @@ package com.peppo.redis;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
@@ -18,6 +20,10 @@ import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.core.*;
 import org.springframework.data.redis.domain.geo.Metrics;
+import org.springframework.data.redis.support.collections.DefaultRedisMap;
+import org.springframework.data.redis.support.collections.RedisList;
+import org.springframework.data.redis.support.collections.RedisSet;
+import org.springframework.data.redis.support.collections.RedisZSet;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -35,6 +41,15 @@ public class RedisTest {
 
     @Autowired
     private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Autowired
+    private CacheManager cacheManager;
+
+    @Autowired
+    private ProductService productService;
 
     @Test
     void testRedisTemplate() {
@@ -233,5 +248,142 @@ public class RedisTest {
         for (int i = 0; i < 10; i++) {
             redisTemplate.convertAndSend("my-channel", "Hello world : " + i);
         }
+    }
+
+    @Test
+    void testRedisList() {
+        List<String> list = RedisList.create("names", redisTemplate);
+        list.add("haris");
+        list.add("kurniawan");
+        list.add("popi");
+        assertThat(list, hasItems("haris", "kurniawan", "popi"));
+
+        List<String> result = redisTemplate.opsForList().range("names", 0, -1);
+        assertThat(result, hasItems("haris", "kurniawan", "popi"));
+    }
+
+    @Test
+    void testRedisSet() {
+        Set<String> set = RedisSet.create("traffic", redisTemplate);
+        set.addAll(Set.of("haris", "kurniawan", "popi"));
+        set.addAll(Set.of("haris", "lestari", "ahmad"));
+        assertThat(set, hasItems("haris", "kurniawan", "popi", "lestari", "ahmad"));
+
+        Set<String> result = redisTemplate.opsForSet().members("traffic");
+        assertThat(result, hasItems("haris", "kurniawan", "popi", "lestari", "ahmad"));
+    }
+
+    @Test
+    void testRedisZSet() {
+        RedisZSet<String> winner = RedisZSet.create("winner", redisTemplate);
+        winner.add("haris", 100);
+        winner.add("kurniawan", 85);
+        winner.add("ahmad", 90);
+        assertThat(winner, hasItems("haris", "kurniawan", "ahmad"));
+
+        Set<String> result = redisTemplate.opsForZSet().range("winner", 0, -1);
+        assertThat(result, hasItems("haris", "kurniawan", "ahmad"));
+
+        assertEquals("haris", winner.popLast());
+        assertEquals("ahmad", winner.popLast());
+        assertEquals("kurniawan", winner.popLast());
+    }
+
+    @Test
+    void testRedisMap() {
+        Map<String, String> map = new DefaultRedisMap<>("user:1", redisTemplate);
+        map.put("name", "haris");
+        map.put("address", "indonesia");
+        assertThat(map, hasEntry("name", "haris"));
+        assertThat(map, hasEntry("address", "indonesia"));
+
+        Map<Object, Object> result = redisTemplate.opsForHash().entries("user:1");
+        assertThat(result, hasEntry("name", "haris"));
+        assertThat(result, hasEntry("address", "indonesia"));
+    }
+
+    @Test
+    void testRepository() {
+        Product product = Product.builder()
+                .id("1")
+                .name("Shampoo")
+                .price(50_000L)
+                .build();
+
+        productRepository.save(product);
+
+        Map<Object, Object> entries = redisTemplate.opsForHash().entries("products:1");
+        assertEquals(product.getId(), entries.get("id"));
+        assertEquals(product.getName(), entries.get("name"));
+        assertEquals(product.getPrice().toString(), entries.get("price"));
+
+        Product product1 = productRepository.findById("1").get();
+        assertEquals(product1, product);
+    }
+
+    @Test
+    void testTTL() throws InterruptedException {
+        Product product = Product.builder()
+                .id("1")
+                .name("Shampoo")
+                .price(50_000L)
+                .ttl(3L)
+                .build();
+        productRepository.save(product);
+
+        assertTrue(productRepository.findById("1").isPresent());
+        Thread.sleep(Duration.ofSeconds(5));
+
+        assertFalse(productRepository.findById("1").isPresent());
+    }
+
+    @Test
+    void testCache() {
+        Cache cache = cacheManager.getCache("scores");
+
+        // menyimpan
+        cache.put("Haris", 100);
+        cache.put("Kurniawan", 90);
+
+        assertEquals(100, cache.get("Haris", Integer.class));
+        assertEquals(90, cache.get("Kurniawan", Integer.class));
+
+        // untuk menhapus
+        cache.evict("Haris");
+        cache.evict("Kurniawan");
+
+        assertNull(cache.get("Haris"));
+        assertNull(cache.get("Kurniawan"));
+    }
+
+    @Test
+    void testFindProduct() {
+        Product product = productService.getProduct("P-001");
+        assertNotNull(product);
+        assertEquals("P-001", product.getId());
+        assertEquals("contoh", product.getName());
+
+        Product product1 = productService.getProduct("P-001");
+        assertEquals(product1, product);
+    }
+
+    @Test
+    void testCachePut() {
+        Product product = Product.builder().id("P-002").name("Ikan").price(15_000L).build();
+        productService.saveProduct(product);
+
+        Product product1 = productService.getProduct("P-002");
+        assertEquals(product1, product);
+    }
+
+    @Test
+    void testCacheEvict() {
+        Product product = productService.getProduct("P-003");
+        assertNotNull(product);
+
+        productService.removeProduct("P-003");
+
+        Product product1 = productService.getProduct("P-003");
+        assertEquals(product1, product);
     }
 }
